@@ -43,7 +43,6 @@ contract Superman is ReentrancyGuard, Ownable, IFlashLoanSimpleReceiver {
         return pool.getUserAccountData(user);
     }
 
-    // TODO: Test on testnet first
     function liquidate(
         address collateralAsset, // TODO: What if it's a native token (ETH or something like that)
         address debtAsset,
@@ -55,16 +54,16 @@ contract Superman is ReentrancyGuard, Ownable, IFlashLoanSimpleReceiver {
             debtAsset.safeTransferFrom(msg.sender, address(this), debtToCover);
             debtAsset.safeApprove(address(pool), debtToCover);
             pool.liquidationCall(collateralAsset, debtAsset, user, type(uint256).max, receiveAToken); // Debug what exactly does this do?
+
+            uint256 collateralBalance = collateralAsset.balanceOf(address(this));
+            collateralAsset.safeTransfer(owner(), collateralBalance); // the collateral that is received as part of the liquidation
+            uint256 debtAssetBalance = debtAsset.balanceOf(address(this));
+            debtAsset.safeTransfer(owner(), debtAssetBalance); // the execess debt provided to increase the health factor to 1
         } else {
             // or take a flashloan from pool
             bytes memory params = abi.encode(collateralAsset, user);
             _takeFlashLoan(address(this), debtAsset, debtToCover, params, 0);
         }
-
-        uint256 collateralBalance = collateralAsset.balanceOf(address(this));
-        collateralAsset.safeTransfer(owner(), collateralBalance); // the collateral that is received as part of the liquidation
-        uint256 debtAssetBalance = debtAsset.balanceOf(address(this));
-        debtAsset.safeTransfer(owner(), debtAssetBalance); // the execess debt provided to increase the health factor to 1
     }
 
     function _takeFlashLoan(
@@ -74,7 +73,6 @@ contract Superman is ReentrancyGuard, Ownable, IFlashLoanSimpleReceiver {
         bytes memory params,
         uint16 referralCode // default to 0 currently
     ) internal nonReentrant {
-        // TODO: Implement this correctly
         pool.flashLoanSimple(receiverAddress, asset, amount, params, referralCode);
     }
 
@@ -108,6 +106,11 @@ contract Superman is ReentrancyGuard, Ownable, IFlashLoanSimpleReceiver {
         (address collateralAsset, address user) = abi.decode(params, (address, address));
         pool.liquidationCall(collateralAsset, asset, user, type(uint256).max, false); // Debug what exactly does this do?
 
+        // uint256 collateralBalance = collateralAsset.balanceOf(address(this));
+        // collateralAsset.safeTransfer(owner(), collateralBalance); // the collateral that is received as part of the liquidation
+        // uint256 debtAssetBalance = asset.balanceOf(address(this));
+        // asset.safeTransfer(owner(), debtAssetBalance); // the execess debt provided to increase the health factor to 1
+
         // approve which contract to pull asset of amount + premium
         asset.safeApprove(address(pool), amount + premium);
 
@@ -121,4 +124,30 @@ contract Superman is ReentrancyGuard, Ownable, IFlashLoanSimpleReceiver {
     function POOL() external view returns (IPool) {
         return pool;
     }
+
+    function withdrawDust() external nonReentrant onlyOwner {
+        uint256 balance = address(this).balance;
+        (bool success,) = owner().call{value: balance}("");
+        if (!success) {
+            revert Superman__TransferFailed(0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE, owner()); // For native token
+        }
+    }
+
+    function withdrawDustTokens(address[] calldata tokens) external nonReentrant onlyOwner {
+        uint256 length = tokens.length;
+        for (uint256 i = 0; i < length; i++) {
+            uint256 balance = IERC20(tokens[i]).balanceOf(address(this));
+            address(tokens[i]).safeTransfer(owner(), balance);
+        }
+    }
+
+    /**
+     * @dev Receive function to accept native currency
+     */
+    receive() external payable {}
+
+    /**
+     * @dev Fallback function
+     */
+    fallback() external payable {}
 }

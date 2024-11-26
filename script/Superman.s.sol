@@ -14,7 +14,7 @@ contract SupermanScript is Script {
 
         vm.startBroadcast();
 
-        superman = new Superman(config.aavePool);
+        superman = new Superman(config.account, config.aavePool, config.poolAddressesProvider);
 
         vm.stopBroadcast();
     }

@@ -15,6 +15,7 @@ contract HelperConfig is Script {
     //////////////////////////////////////////////////////////////*/
     struct NetworkConfig {
         address aavePool;
+        address poolAddressesProvider;
         address comet;
         address usdc;
         address weth;
@@ -63,8 +64,9 @@ contract HelperConfig is Script {
     function getEthSepoliaConfig() public pure returns (NetworkConfig memory) {
         return NetworkConfig({
             aavePool: 0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951,
+            poolAddressesProvider: 0x012bAC54348C0E635dCAc9D5FB99f06F24136C9A,
             comet: 0xAec1F48e02Cfb822Be958B68C7957156EB3F0b6e,
-            usdc: 0x2F6F07CDcf3588944Bf4C42aC74ff24bF56e7590,
+            usdc: 0x94a9D9AC8a22534E3FaCa9F4e7F2E2cf85d5E4C8, // usdc for comet: 0x2F6F07CDcf3588944Bf4C42aC74ff24bF56e7590
             weth: 0xC558DBdd856501FCd9aaF1E62eae57A9F0629a3c,
             account: BURNER_WALLET
         });
@@ -74,6 +76,7 @@ contract HelperConfig is Script {
         // This is v7
         return NetworkConfig({
             aavePool: 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2,
+            poolAddressesProvider: 0x2f39d218133AFaB8F2B819B1066c7E434Ad94E9e,
             comet: 0xc3d688B66703497DAA19211EEdff47f25384cdc3,
             usdc: 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48,
             weth: 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2,
@@ -84,6 +87,7 @@ contract HelperConfig is Script {
     function getBaseMainnetConfig() public pure returns (NetworkConfig memory) {
         return NetworkConfig({
             aavePool: 0xA238Dd80C259a72e81d7e4664a9801593F98d1c5,
+            poolAddressesProvider: 0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D,
             comet: 0xb125E6687d4313864e53df431d5425969c15Eb2F,
             usdc: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913,
             weth: 0x4200000000000000000000000000000000000006,
