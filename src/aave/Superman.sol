@@ -47,29 +47,29 @@ contract Superman is ReentrancyGuard, Ownable, IFlashLoanSimpleReceiver {
         address collateralAsset, // TODO: What if it's a native token (ETH or something like that)
         address debtAsset,
         address user,
-        uint256 debtToCover, // defaulted to uint(-1)
+        uint256 debtToCover,
         bool receiveAToken // default: false
-    ) external nonReentrant {
+    ) external {
+        // TODO: Have removed the nonReentrant modifier to allow entering executeOperation
         if (debtAsset.balanceOf(address(msg.sender)) >= debtToCover) {
             debtAsset.safeTransferFrom(msg.sender, address(this), debtToCover);
             debtAsset.safeApprove(address(pool), debtToCover);
-            pool.liquidationCall(collateralAsset, debtAsset, user, type(uint256).max, receiveAToken); // TODO: Debug what exactly does this do under the hood
+            pool.liquidationCall(collateralAsset, debtAsset, user, debtToCover, receiveAToken); // TODO: Debug what exactly does this do under the hood
 
             uint256 collateralBalance = collateralAsset.balanceOf(address(this));
             collateralAsset.safeTransfer(owner(), collateralBalance); // the collateral that is received as part of the liquidation
             uint256 debtAssetBalance = debtAsset.balanceOf(address(this));
-            debtAsset.safeTransfer(owner(), debtAssetBalance); // the execess debt provided to increase the health factor to 1
+            debtAsset.safeTransfer(owner(), debtAssetBalance); // the execess debt provided to execute liquidation
         } else {
             // or take a flashloan from pool
             bytes memory params = abi.encode(collateralAsset, user);
             _takeFlashLoan(address(this), debtAsset, debtToCover, params, 0);
-            // TODO: Complete the function
         }
     }
 
     function _takeFlashLoan(
         address receiverAddress,
-        address asset, // collateralAsset asset
+        address asset, // debt asset address
         uint256 amount, // debtToCover
         bytes memory params,
         uint16 referralCode // default to 0 currently
@@ -105,15 +105,15 @@ contract Superman is ReentrancyGuard, Ownable, IFlashLoanSimpleReceiver {
         asset.safeApprove(address(pool), amount);
 
         (address collateralAsset, address user) = abi.decode(params, (address, address));
-        pool.liquidationCall(collateralAsset, asset, user, type(uint256).max, false); // Debug what exactly does this do?
-
-        // uint256 collateralBalance = collateralAsset.balanceOf(address(this));
-        // collateralAsset.safeTransfer(owner(), collateralBalance); // the collateral that is received as part of the liquidation
-        // uint256 debtAssetBalance = asset.balanceOf(address(this));
-        // asset.safeTransfer(owner(), debtAssetBalance); // the execess debt provided to increase the health factor to 1
+        pool.liquidationCall(collateralAsset, asset, user, amount, false); // Debug what exactly does this do?
 
         // approve which contract to pull asset of amount + premium
         asset.safeApprove(address(pool), amount + premium);
+
+        uint256 collateralBalance = collateralAsset.balanceOf(address(this));
+        collateralAsset.safeTransfer(owner(), collateralBalance); // the collateral that is received as part of the liquidation
+        uint256 debtAssetBalance = asset.balanceOf(address(this)) - (amount + premium);
+        asset.safeTransfer(owner(), debtAssetBalance); // the execess debt provided to execute liquidation
 
         return true;
     }

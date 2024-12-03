@@ -21,10 +21,10 @@ contract SupermanTest is Test {
     IPool private pool;
     IERC20 collateralToken; // weth
     IERC20 debtToken; // usdc
-    address private user;
-    address private liquidator;
     address private owner;
+    address private liquidator;
 
+    address private immutable user = makeAddr("user");
     uint256 public constant INITIAL_USDC_BALANCE = 1_000_000e6; // 1000_000 USDC
     uint256 public constant INITIAL_WETH_BALANCE = 100 ether; // 100 ethers
 
@@ -38,11 +38,7 @@ contract SupermanTest is Test {
     uint8 private constant ORACLE_DECIMAL = 8;
 
     function setUp() public {
-        // Setup test accounts
-        user = makeAddr("user");
-        liquidator = makeAddr("liquidator");
-
-        // Deploy mocks
+        // Setup contracts
         string memory rpcUrl = vm.envString("BASE_RPC_URL");
         vm.createSelectFork(rpcUrl);
 
@@ -61,23 +57,17 @@ contract SupermanTest is Test {
         superman = new Superman(owner, address(pool), address(poolAddressesProvider));
 
         // Additional setup
-        // vm.deal(address(superman), 1 ether); // Add some ETH for testing
         deal(networkConfig.weth, address(user), INITIAL_WETH_BALANCE, false);
         console.log("Collateral token balance: ", collateralToken.balanceOf(user));
-        deal(networkConfig.usdc, address(liquidator), INITIAL_USDC_BALANCE, true);
-        // deal(networkConfig.usdc, address(user), INITIAL_USDC_BALANCE, true);
-
-        // Fund liquidator
-        // vm.prank(liquidator);
-        // debtToken.approve(address(pool), type(uint256).max);
     }
 
-    function testLiquidation() public {
+    function _setupForLiquidation() private {
         uint256 supplyWethAmount = 10 ether; // Around $40k
-        uint256 borrowDebtAmount = 25_000 * 1e6; // Precisely $!5k
+        uint256 borrowDebtAmount = 25_000 * 1e6; // Precisely $25k
         // Supply collateral
         vm.startPrank(user);
 
+        // Supply WETH as collateral
         address(collateralToken).safeApprove(address(pool), supplyWethAmount);
         pool.supply(address(collateralToken), supplyWethAmount, user, 0);
 
@@ -86,10 +76,10 @@ contract SupermanTest is Test {
         vm.stopPrank();
 
         // Method 1: Decrease WETH price by 50% to trigger liquidation
-        int256 mockWethPrice = int256(4000) * int256(10 ** ORACLE_DECIMAL);
+        int256 mockWethPrice = int256(4000) * int256(10 ** ORACLE_DECIMAL); // Setting $4000 as the ETH price
         MockV3Aggregator mockWethPriceFeed = new MockV3Aggregator(ORACLE_DECIMAL, mockWethPrice);
 
-        // Set new price (50% lower)
+        // Set new price (50% lower) = $2000
         int256 newPrice = (mockWethPriceFeed.latestAnswer() * 50) / 100;
         mockWethPriceFeed.updateAnswer(newPrice);
 
@@ -109,27 +99,52 @@ contract SupermanTest is Test {
             uint256 ltv, // ltv
             uint256 healthFactor
         ) = pool.getUserAccountData(user);
-        // console.log("totalCollateralBase: ", collateral);
-        // console.log("totalDebtBase: ", debt);
-        // console.log("availableBorrowsBase: ", availableBorrowsBase);
-        // console.log("currentLiquidationThreshold: ", currentLiquidationThreshold);
         console.log("ltv: ", ltv);
         console.log("healthFactor: ", healthFactor);
+    }
 
-        // assertTrue(healthFactorBelowThreshold, "User should be liquidatable");
-
+    function testLiquidationHavingDebtToCover() public {
+        _setupForLiquidation();
         // Perform liquidation
-        vm.startPrank(liquidator);
-        // Calculate the debt to cover if possible
         uint256 debtToCover = 5_000 * 1e6;
-        debtToken.approve(address(pool), debtToCover);
-        pool.liquidationCall(
-            address(collateralToken), // collateral
-            address(debtToken), // debt
-            user, // user to liquidate
-            debtToCover, // debt to cover
-            false // receive aToken
+        liquidator = owner; // Making the liquidator the owner here so that all the assets are transferred back to the owner
+        deal(networkConfig.usdc, address(liquidator), debtToCover, true);
+        vm.startPrank(liquidator);
+        // TODO: Calculate the debt to cover (since max 50% can be liquidated)
+        debtToken.approve(address(superman), debtToCover);
+        superman.liquidate(
+            address(collateralToken),
+            address(debtToken),
+            user,
+            debtToCover, // defaulted to uint(-1)
+            false // default: false
         );
+
+        vm.stopPrank();
+
+        // TODO: Execute the final checks
+        // user doesn't have collateral that he can take back
+        // owner has more amount than he / she had
+        // superman doens't have underlying asset left
+    }
+
+    function testLiquidationWithoutDebtToCover() public {
+        _setupForLiquidation();
+        // Perform liquidation
+        uint256 debtToCover = 5_000 * 1e6;
+        liquidator = owner; // Making the liquidator the owner here so that all the assets are transferred back to the owner
+        // deal(networkConfig.usdc, address(liquidator), debtToCover, true); // liquidator now doesn't have enough balance to liquidate
+        vm.startPrank(liquidator);
+        // TODO: Calculate the debt to cover (since max 50% can be liquidated)
+        debtToken.approve(address(superman), debtToCover);
+        superman.liquidate(
+            address(collateralToken),
+            address(debtToken),
+            user,
+            debtToCover, // defaulted to uint(-1)
+            false // default: false
+        );
+
         vm.stopPrank();
     }
 }
