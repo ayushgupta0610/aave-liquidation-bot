@@ -53,7 +53,7 @@ contract Superman is ReentrancyGuard, Ownable, IFlashLoanSimpleReceiver {
         if (debtAsset.balanceOf(address(msg.sender)) >= debtToCover) {
             debtAsset.safeTransferFrom(msg.sender, address(this), debtToCover);
             debtAsset.safeApprove(address(pool), debtToCover);
-            pool.liquidationCall(collateralAsset, debtAsset, user, type(uint256).max, receiveAToken); // Debug what exactly does this do?
+            pool.liquidationCall(collateralAsset, debtAsset, user, type(uint256).max, receiveAToken); // TODO: Debug what exactly does this do under the hood
 
             uint256 collateralBalance = collateralAsset.balanceOf(address(this));
             collateralAsset.safeTransfer(owner(), collateralBalance); // the collateral that is received as part of the liquidation
@@ -63,6 +63,7 @@ contract Superman is ReentrancyGuard, Ownable, IFlashLoanSimpleReceiver {
             // or take a flashloan from pool
             bytes memory params = abi.encode(collateralAsset, user);
             _takeFlashLoan(address(this), debtAsset, debtToCover, params, 0);
+            // TODO: Complete the function
         }
     }
 
