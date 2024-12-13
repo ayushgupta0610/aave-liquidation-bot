@@ -30,7 +30,6 @@ contract SupermanTest is Test {
 
     IPoolAddressesProvider private poolAddressesProvider;
     MockAaveOracle private mockAaveOracle;
-    // IAaveOracle private aaveOracle;
 
     // Add constants for testing
     uint256 private constant FLASH_LOAN_PREMIUM = 5; // 0.05%
@@ -49,11 +48,10 @@ contract SupermanTest is Test {
         debtToken = IERC20(networkConfig.usdc);
         mockAaveOracle = new MockAaveOracle();
         owner = networkConfig.account;
+        liquidator = owner;
 
         // Deploy Superman with correct parameters
         poolAddressesProvider = IPoolAddressesProvider(networkConfig.poolAddressesProvider);
-        address oracleAddress = poolAddressesProvider.getPriceOracle();
-        // aaveOracle = IAaveOracle(oracleAddress);
         pool = IPool(networkConfig.aavePool);
         superman = new Superman(owner, address(pool), address(poolAddressesProvider));
 
@@ -98,8 +96,8 @@ contract SupermanTest is Test {
         _setupForLiquidation();
 
         // Store initial balances
-        uint256 initialOwnerCollateral = collateralToken.balanceOf(owner);
-        uint256 initialOwnerDebt = debtToken.balanceOf(owner);
+        uint256 initialOwnerCollateral = collateralToken.balanceOf(liquidator);
+        uint256 initialOwnerDebt = debtToken.balanceOf(liquidator);
         uint256 initialUserCollateral = collateralToken.balanceOf(user);
 
         console.log("Initial balances:");
@@ -109,22 +107,22 @@ contract SupermanTest is Test {
 
         // Calculate a very small debtToCover (0.1% of total debt)
         (, uint256 totalDebtBase,,,,) = pool.getUserAccountData(user);
-        uint256 debtToCover = 100 * 1e6; // Just 100 USDC to start
+        uint256 debtToCover = 1 * 1e6; // Just 100 USDC to start
         console.log("Debt to cover:", debtToCover);
         console.log("totalDebtBase:", totalDebtBase);
 
-        // Give liquidator (owner) enough USDC
-        deal(address(debtToken), owner, debtToCover * 2);
-        console.log("Liquidator USDC balance:", debtToken.balanceOf(owner));
+        // Give liquidator enough USDC
+        deal(address(debtToken), liquidator, debtToCover * 2);
+        console.log("Liquidator USDC balance:", debtToken.balanceOf(liquidator));
 
-        vm.startPrank(owner);
+        vm.startPrank(liquidator);
 
         // Log pre-liquidation approvals
-        console.log("Pre-liquidation approval:", debtToken.allowance(owner, address(superman)));
+        console.log("Pre-liquidation approval:", debtToken.allowance(liquidator, address(superman)));
 
         // Approve Superman to use USDC
         debtToken.approve(address(superman), debtToCover);
-        console.log("Post-approval amount:", debtToken.allowance(owner, address(superman)));
+        console.log("Post-approval amount:", debtToken.allowance(liquidator, address(superman)));
 
         console.log("=== Starting liquidation ===");
 
@@ -140,8 +138,8 @@ contract SupermanTest is Test {
 
         // Log final balances
         console.log("Final balances:");
-        console.log("Owner collateral:", collateralToken.balanceOf(owner));
-        console.log("Owner debt:", debtToken.balanceOf(owner));
+        console.log("liquidator collateral:", collateralToken.balanceOf(liquidator));
+        console.log("liquidator debt:", debtToken.balanceOf(liquidator));
         console.log("User collateral:", collateralToken.balanceOf(user));
     }
 
@@ -150,7 +148,6 @@ contract SupermanTest is Test {
         // Perform liquidation
         uint256 debtToCover = 5_000 * 1e6;
         liquidator = owner; // Making the liquidator the owner here so that all the assets are transferred back to the owner
-        // deal(networkConfig.usdc, address(liquidator), debtToCover, true); // liquidator now doesn't have enough balance to liquidate
         vm.startPrank(liquidator);
         // TODO: Calculate the debt to cover (since max 50% can be liquidated)
         debtToken.approve(address(superman), debtToCover);
