@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
+import {console} from "forge-std/Test.sol";
 import {IPool} from "../interfaces/IPool.sol";
 import {SafeTransferLib} from "lib/solady/src/utils/SafeTransferLib.sol";
 // import {ReentrancyGuardTransient} from "lib/solady/src/utils/ReentrancyGuardTransient.sol";
@@ -44,26 +45,57 @@ contract Superman is ReentrancyGuard, Ownable, IFlashLoanSimpleReceiver {
     }
 
     function liquidate(
-        address collateralAsset, // TODO: What if it's a native token (ETH or something like that)
+        address collateralAsset,
         address debtAsset,
         address user,
         uint256 debtToCover,
-        bool receiveAToken // default: false
-    ) external {
-        // TODO: Have removed the nonReentrant modifier to allow entering executeOperation
-        if (debtAsset.balanceOf(address(msg.sender)) >= debtToCover) {
-            debtAsset.safeTransferFrom(msg.sender, address(this), debtToCover);
-            debtAsset.safeApprove(address(pool), debtToCover);
-            pool.liquidationCall(collateralAsset, debtAsset, user, debtToCover, receiveAToken); // TODO: Debug what exactly does this do under the hood
+        bool receiveAToken
+    ) external nonReentrant {
+        // Validate inputs
+        require(debtToCover > 0, "Invalid debt amount");
+        require(debtToCover <= type(uint256).max / 2, "Debt amount too large"); // Prevent potential overflows
 
-            uint256 collateralBalance = collateralAsset.balanceOf(address(this));
-            collateralAsset.safeTransfer(owner(), collateralBalance); // the collateral that is received as part of the liquidation
-            uint256 debtAssetBalance = debtAsset.balanceOf(address(this));
-            debtAsset.safeTransfer(owner(), debtAssetBalance); // the execess debt provided to execute liquidation
+        // Use a very small amount for initial test
+        uint256 actualDebtToCover = debtToCover;
+
+        // Get initial balances
+        uint256 initialCollateralBalance = collateralAsset.balanceOf(address(this));
+        uint256 initialDebtBalance = debtAsset.balanceOf(address(this));
+
+        console.log("Pre-liquidation balances:");
+        console.log("Contract collateral:", initialCollateralBalance);
+        console.log("Contract debt:", initialDebtBalance);
+
+        if (debtAsset.balanceOf(msg.sender) >= actualDebtToCover) {
+            // Transfer and approve with safety checks
+            require(debtAsset.balanceOf(msg.sender) >= actualDebtToCover, "Insufficient balance");
+
+            debtAsset.safeTransferFrom(msg.sender, address(this), actualDebtToCover);
+            // require(success, "Transfer failed");
+
+            debtAsset.safeApprove(address(pool), 0); // Clear previous approval
+            debtAsset.safeApprove(address(pool), actualDebtToCover);
+
+            // Execute liquidation
+            pool.liquidationCall(collateralAsset, debtAsset, user, actualDebtToCover, receiveAToken);
+
+            // Transfer assets back with safety checks
+            uint256 finalCollateralBalance = collateralAsset.balanceOf(address(this));
+            uint256 finalDebtBalance = debtAsset.balanceOf(address(this));
+
+            console.log("Post-liquidation balances:");
+            console.log("Contract collateral:", finalCollateralBalance);
+            console.log("Contract debt:", finalDebtBalance);
+
+            if (finalCollateralBalance > initialCollateralBalance) {
+                collateralAsset.safeTransfer(owner(), finalCollateralBalance - initialCollateralBalance);
+            }
+
+            if (finalDebtBalance > initialDebtBalance) {
+                debtAsset.safeTransfer(owner(), finalDebtBalance - initialDebtBalance);
+            }
         } else {
-            // or take a flashloan from pool
-            bytes memory params = abi.encode(collateralAsset, user);
-            _takeFlashLoan(address(this), debtAsset, debtToCover, params, 0);
+            revert("Insufficient balance for liquidation");
         }
     }
 
@@ -89,9 +121,8 @@ contract Superman is ReentrancyGuard, Ownable, IFlashLoanSimpleReceiver {
             revert Superman__InvalidInitiator();
         }
 
-        // TODO: Execute your logic here (params). Take into account the gas fees along with premium
         // Estimate gas cost for the entire operation (can be adjusted based on network conditions)
-        // uint256 estimatedGasCost = 300000 * tx.gasprice; // Approximate gas units * current gas price
+        // uint256 estimatedGasCost = 300000 * tx.gasprice; // Approximate gas units * current gas price (gasLeft() * tx.gasprice)
 
         // Convert gas cost to token terms (you'll need a price oracle in production)
         // uint256 gasCostInTokens = estimatedGasCost; // This should be converted to token terms using an oracle
