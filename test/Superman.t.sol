@@ -1,257 +1,167 @@
-// // SPDX-License-Identifier: MIT
-// pragma solidity ^0.8.28;
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.28;
 
-// import {Test, console} from "forge-std/Test.sol";
-// import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-// import {SafeTransferLib} from "lib/solady/src/utils/SafeTransferLib.sol";
-// import {Superman} from "../src/aave/Superman.sol";
-// import {IPool} from "../src/interfaces/IPool.sol";
-// import {HelperConfig} from "../script/HelperConfig.s.sol";
-// import {IPoolAddressesProvider} from "../src/interfaces/IPoolAddressesProvider.sol";
-// import {IAaveOracle} from "../src/interfaces/IAaveOracle.sol";
+import {Test} from "forge-std/Test.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeTransferLib} from "lib/solady/src/utils/SafeTransferLib.sol";
+import {Superman} from "../src/aave/Superman.sol";
+import {IPool} from "../src/interfaces/IPool.sol";
+import {HelperConfig} from "../script/HelperConfig.s.sol";
+import {IPoolAddressesProvider} from "../src/interfaces/IPoolAddressesProvider.sol";
+import {IAaveOracle} from "../src/interfaces/IAaveOracle.sol";
+import {MockAaveOracle} from "./mocks/MockAaveOracle.sol";
+import {MockPoolAddressesProvider} from "./mocks/MockPoolAddressesProvider.sol";
+import {MockV3Aggregator} from "./mocks/MockV3Aggregator.sol";
 
-// contract SupermanTest is Test {
-//     using SafeTransferLib for address;
+contract SupermanTest is Test {
+    using SafeTransferLib for address;
 
-//     Superman private superman;
-//     HelperConfig.NetworkConfig private networkConfig;
-//     IPool private pool;
-//     IERC20 collateralToken;
-//     IERC20 debtToken;
-//     address private user;
-//     address private liquidator;
-//     address private owner;
+    Superman private superman;
+    HelperConfig.NetworkConfig private networkConfig;
+    IPool private pool;
+    IERC20 collateralToken; // weth
+    IERC20 debtToken; // usdc
+    address private owner;
+    address private liquidator;
 
-//     uint256 public constant INITIAL_BALANCE = 1_000_000e6; // 1000_000 USDC
+    address private immutable user = makeAddr("user");
+    uint256 public constant INITIAL_USDC_BALANCE = 1_000_000e6; // 1000_000 USDC
+    uint256 public constant INITIAL_WETH_BALANCE = 30 ether; // 30 ethers
 
-//     IPoolAddressesProvider private poolAddressesProvider;
+    IPoolAddressesProvider private poolAddressesProvider;
+    MockAaveOracle private mockAaveOracle;
 
-//     // Add constants for testing
-//     uint256 private constant FLASH_LOAN_PREMIUM = 5; // 0.05%
-//     uint256 private constant PRICE_IMPACT = 100; // 1%
-//     uint256 private constant PRECISION = 10000;
+    // Add constants for testing
+    uint256 private constant FLASH_LOAN_PREMIUM = 5; // 0.05%
+    uint256 private constant PRECISION = 10000;
+    uint8 private constant ORACLE_DECIMAL = 8;
+    uint256 private constant SLIPPAGE_FACTOR = 100; // 2.5% (250) slippage required to convert the collateral asset from debt asset (on Base UV2 from WETH to USDC!)
 
-//     function setUp() public {
-//         // Deploy mocks
-//         string memory rpcUrl = vm.envString("BASE_RPC_URL");
-//         vm.createSelectFork(rpcUrl);
+    function setUp() public {
+        // Setup contracts
+        string memory rpcUrl = vm.envString("ETH_RPC_URL");
+        vm.createSelectFork(rpcUrl);
 
-//         HelperConfig config = new HelperConfig();
-//         networkConfig = config.getConfig();
+        HelperConfig config = new HelperConfig();
+        networkConfig = config.getConfig();
 
-//         pool = IPool(networkConfig.aavePool);
-//         collateralToken = IERC20(networkConfig.usdc);
-//         debtToken = IERC20(networkConfig.weth);
-//         owner = networkConfig.account;
+        collateralToken = IERC20(networkConfig.weth);
+        debtToken = IERC20(networkConfig.usdc);
+        mockAaveOracle = new MockAaveOracle();
+        owner = networkConfig.account;
+        liquidator = owner;
 
-//         poolAddressesProvider = IPoolAddressesProvider(networkConfig.poolAddressesProvider);
+        // Deploy Superman with correct parameters
+        poolAddressesProvider = IPoolAddressesProvider(networkConfig.poolAddressesProvider);
+        pool = IPool(networkConfig.aavePool);
+        superman = new Superman(
+            owner, address(pool), address(poolAddressesProvider), networkConfig.routerV2, networkConfig.aaveOracle
+        );
 
-//         // Deploy Superman with correct parameters
-//         superman = new Superman(owner, address(pool), address(poolAddressesProvider));
+        // Additional setup
+        deal(networkConfig.weth, address(user), INITIAL_WETH_BALANCE, false);
+    }
 
-//         // Additional setup
-//         vm.deal(address(superman), 1 ether); // Add some ETH for testing
-//         deal(address(collateralToken), address(superman), INITIAL_BALANCE);
-//         deal(address(debtToken), address(superman), INITIAL_BALANCE);
+    function _setupForLiquidation() private {
+        uint256 supplyWethAmount = 10 ether;
+        uint256 borrowDebtAmount = 30_000 * 1e6;
 
-//         // Setup test accounts
-//         user = makeAddr("user");
-//         liquidator = makeAddr("liquidator");
+        // Fund pool with more USDC
+        deal(address(debtToken), address(pool), borrowDebtAmount * 10);
 
-//         // Fund liquidator
-//         vm.prank(liquidator);
-//         collateralToken.approve(address(superman), type(uint256).max);
-//     }
+        // Set initial prices
+        mockAaveOracle.setAssetPrice(address(collateralToken), 4000e8); // WETH at $4000
+        mockAaveOracle.setAssetPrice(address(debtToken), 1e8); // USDC at $1
 
-//     function testLiquidate() public {
-//         uint256 debtAmount = 100e18;
-//         uint256 collateralBonus = 110e18; // Assuming 10% bonus
+        // Mock oracle
+        vm.mockCall(
+            address(poolAddressesProvider),
+            abi.encodeWithSelector(IPoolAddressesProvider.getPriceOracle.selector),
+            abi.encode(address(mockAaveOracle))
+        );
 
-//         // Setup tokens
-//         // collateralToken.mint(address(pool), collateralBonus);
-//         // pool.setTokens(address(collateralToken), address(debtToken));
+        vm.startPrank(user);
+        address(collateralToken).safeApprove(address(pool), supplyWethAmount);
+        pool.supply(address(collateralToken), supplyWethAmount, user, 0);
+        pool.borrow(address(debtToken), borrowDebtAmount, 2, 0, user);
+        vm.stopPrank();
 
-//         // Perform liquidation
-//         vm.prank(liquidator);
-//         superman.liquidate(address(collateralToken), address(debtToken), address(this), debtAmount, false);
+        // Crash price by 75% to ensure liquidation
+        mockAaveOracle.setAssetPrice(address(collateralToken), 1000e8); // Drop to $1000
 
-//         // Verify liquidator received collateral
-//         assertEq(collateralToken.balanceOf(liquidator), collateralBonus);
-//         // Verify Superman contract has no remaining balance
-//         assertEq(collateralToken.balanceOf(address(superman)), 0);
-//         assertEq(debtToken.balanceOf(address(superman)), 0);
-//     }
+        // Verify liquidatable state
+        (,,,,, uint256 healthFactor) = pool.getUserAccountData(user);
+        require(healthFactor < 1e18, "Position not liquidatable");
+    }
 
-//     function testLiquidateRevertsOnInsufficientApproval() public {
-//         uint256 debtAmount = 100e18;
+    function testLiquidationHavingDebtToCover() public {
+        _setupForLiquidation();
 
-//         // Remove approval
-//         vm.prank(liquidator);
-//         debtToken.approve(address(superman), 0);
+        // Store initial balances
+        uint256 initialOwnerCollateral = collateralToken.balanceOf(liquidator);
+        uint256 initialOwnerDebt = debtToken.balanceOf(liquidator);
+        uint256 initialUserCollateral = collateralToken.balanceOf(user);
 
-//         // Expect revert on liquidation
-//         vm.prank(liquidator);
-//         vm.expectRevert();
-//         superman.liquidate(address(collateralToken), address(debtToken), address(this), debtAmount, false);
-//     }
+        // Get total debt
+        (, uint256 totalDebtBase,,,,) = pool.getUserAccountData(user);
 
-//     // Add new tests
-//     function testIsLiquidatable() public {
-//         // Setup a user with unhealthy position
-//         _setupUnhealthyPosition();
+        // Try to liquidate 75% of the debt (should be capped at 50%)
+        uint256 debtToCover = (totalDebtBase * 75) / 100;
 
-//         (
-//             uint256 totalCollateralBase,
-//             uint256 totalDebtBase,
-//             uint256 availableBorrowsBase,
-//             uint256 currentLiquidationThreshold,
-//             uint256 ltv,
-//             uint256 healthFactor
-//         ) = superman.isLiquidatable(address(this));
+        // Fund liquidator
+        deal(address(debtToken), liquidator, debtToCover);
 
-//         assertTrue(healthFactor < 1e18, "Position should be liquidatable");
-//         assertGt(totalCollateralBase, 0, "Should have collateral");
-//         assertGt(totalDebtBase, 0, "Should have debt");
-//     }
+        vm.startPrank(liquidator);
+        debtToken.approve(address(superman), debtToCover);
 
-//     function testLiquidateWithSufficientBalance() public {
-//         // Setup
-//         _setupUnhealthyPosition();
-//         uint256 debtAmount = 100e18;
+        superman.liquidate(address(collateralToken), address(debtToken), user, debtToCover, false, SLIPPAGE_FACTOR);
+        vm.stopPrank();
 
-//         vm.startPrank(liquidator);
-//         deal(address(debtToken), liquidator, debtAmount);
-//         debtToken.approve(address(superman), debtAmount);
+        // Verify results
+        (uint256 finalTotalCollateralBase, uint256 finalTotalDebtBase,,,,) = pool.getUserAccountData(user);
 
-//         // Pre-state checks
-//         uint256 liquidatorBalanceBefore = collateralToken.balanceOf(liquidator);
+        // Check that no more than 50% was liquidated
+        assertGe(finalTotalDebtBase, totalDebtBase / 2, "Cannot liquidate more than 50%");
+        assertLt(finalTotalDebtBase, totalDebtBase, "Should have liquidated some debt");
 
-//         // Execute
-//         superman.liquidate(address(collateralToken), address(debtToken), address(this), debtAmount, false);
+        // Check collateral transfer
+        assertGt(collateralToken.balanceOf(liquidator), initialOwnerCollateral, "Owner should receive collateral");
 
-//         // Post-state checks
-//         uint256 liquidatorBalanceAfter = collateralToken.balanceOf(liquidator);
-//         assertGt(liquidatorBalanceAfter, liquidatorBalanceBefore, "Liquidator should receive collateral");
-//         vm.stopPrank();
-//     }
+        // Verify Superman contract has no leftover tokens
+        assertEq(collateralToken.balanceOf(address(superman)), 0, "Superman should not have collateral tokens");
+        assertEq(debtToken.balanceOf(address(superman)), 0, "Superman should not have debt tokens");
+    }
 
-//     function testLiquidateWithFlashLoan() public {
-//         // Setup
-//         _setupUnhealthyPosition();
-//         uint256 debtAmount = 1000e18; // Large amount requiring flash loan
+    function testLiquidationWithoutDebtToCover() public {
+        _setupForLiquidation();
 
-//         vm.startPrank(liquidator);
-//         superman.liquidate(address(collateralToken), address(debtToken), address(this), debtAmount, false);
+        // Store initial balances
+        // uint256 initialOwnerCollateral = collateralToken.balanceOf(liquidator);
 
-//         // Verify flash loan was successful
-//         assertEq(debtToken.balanceOf(address(superman)), 0, "Should have no remaining debt token");
-//         assertGt(collateralToken.balanceOf(liquidator), 0, "Should have received collateral");
-//         vm.stopPrank();
-//     }
+        // Get total debt
+        (, uint256 totalDebtBase,,,,) = pool.getUserAccountData(user);
 
-//     function testWithdrawDust() public {
-//         // Setup
-//         uint256 ethAmount = 1 ether;
-//         uint256 balanceBefore = owner.balance;
-//         vm.deal(address(superman), ethAmount);
+        // Try to liquidate 75% of the debt (should be capped at 50%)
+        uint256 debtToCover = (totalDebtBase * 75) / 100;
 
-//         // Execute
-//         vm.prank(owner);
-//         superman.withdrawDust();
+        // Fund liquidator (This won't be there)
+        // deal(address(debtToken), liquidator, debtToCover);
 
-//         // Verify
-//         assertEq(address(superman).balance, 0);
-//         assertEq(owner.balance - balanceBefore, ethAmount);
-//     }
+        vm.startPrank(liquidator);
+        debtToken.approve(address(superman), debtToCover);
 
-//     function testWithdrawDustTokens() public {
-//         // Setup
-//         address[] memory tokens = new address[](2);
-//         tokens[0] = address(collateralToken);
-//         tokens[1] = address(debtToken);
+        superman.liquidate(address(collateralToken), address(debtToken), user, debtToCover, false, SLIPPAGE_FACTOR);
+        vm.stopPrank();
 
-//         deal(address(collateralToken), address(superman), 100e18);
-//         deal(address(debtToken), address(superman), 100e18);
+        // Verify results
+        (uint256 finalTotalCollateralBase, uint256 finalTotalDebtBase,,,,) = pool.getUserAccountData(user);
 
-//         // Execute
-//         vm.prank(owner);
-//         superman.withdrawDustTokens(tokens);
+        // Check that no more than 50% was liquidated
+        assertGe(finalTotalDebtBase, totalDebtBase / 2, "Cannot liquidate more than 50%");
+        assertLt(finalTotalDebtBase, totalDebtBase, "Should have liquidated some debt");
 
-//         // Verify
-//         assertEq(collateralToken.balanceOf(address(superman)), 0);
-//         assertEq(debtToken.balanceOf(address(superman)), 0);
-//     }
-
-//     // Helper functions (TODO)
-//     function _setupUnhealthyPosition() internal {
-//         // Deposit $100 worth of collateral and take a loan of $75, then take another loan of $5
-//         // Supply initial WETH as collateral
-//         uint256 collateralAmount = 4000 * 1e6;
-//         address(collateralToken).safeApprove(address(this), collateralAmount);
-//         pool.supply(address(collateralToken), collateralAmount, address(this), 0);
-
-//         (
-//             uint256 totalCollateralBase,
-//             uint256 totalDebtBase,
-//             uint256 availableBorrowsBase,
-//             uint256 currentLiquidationThreshold,
-//             uint256 ltv,
-//             uint256 healthFactor
-//         ) = pool.getUserAccountData(address(this));
-//         console.log("totalCollateralBase: ", totalCollateralBase);
-//         console.log("totalDebtBase: ", totalDebtBase);
-//         console.log("availableBorrowsBase: ", availableBorrowsBase);
-//         console.log("currentLiquidationThreshold: ", currentLiquidationThreshold);
-//         console.log("ltv: ", ltv);
-//         console.log("healthFactor: ", healthFactor);
-
-//         // uint256 borrowAmount = 85% of the collateral amount
-//         // pool.borrow(debtToken, borrowAmount, 2, 0, address(this));
-//     }
-
-//     // Fuzz tests
-//     function testFuzz_Liquidate(uint256 debtAmount) public {
-//         vm.assume(debtAmount > 0 && debtAmount < 1_000_000e18);
-//         _setupUnhealthyPosition();
-
-//         vm.startPrank(liquidator);
-//         deal(address(debtToken), liquidator, debtAmount);
-//         debtToken.approve(address(superman), debtAmount);
-
-//         superman.liquidate(address(collateralToken), address(debtToken), address(this), debtAmount, false);
-//         vm.stopPrank();
-//     }
-
-//     function testSetupUnhealthyPosition() public {
-//         // Supply initial WETH as collateral
-//         uint256 collateralAmount = 4000 * 1e6;
-//         deal(address(collateralToken), address(user), collateralAmount);
-//         vm.startPrank(user);
-//         address(collateralToken).safeApprove(address(pool), collateralAmount);
-//         pool.supply(address(collateralToken), collateralAmount, user, 0);
-//         (
-//             uint256 totalCollateralBase,
-//             uint256 totalDebtBase,
-//             uint256 availableBorrowsBase,
-//             uint256 currentLiquidationThreshold,
-//             uint256 ltv,
-//             uint256 healthFactor
-//         ) = pool.getUserAccountData(address(user));
-//         uint256 maxBorrowAmountInUsd = ltv * totalCollateralBase / (1e8 * 1e4);
-//         console.log("maxBorrowAmountInUsd: ", maxBorrowAmountInUsd);
-//         address oracleAddress = poolAddressesProvider.getPriceOracle();
-//         uint256 ethPrice = IAaveOracle(oracleAddress).getAssetPrice(address(debtToken));
-//         console.log("ethPrice: ", ethPrice);
-//         uint256 borrowAmount = maxBorrowAmountInUsd * 1e8 * 1e18 / ethPrice;
-//         console.log("borrowAmount: ", borrowAmount);
-//         pool.borrow(address(debtToken), borrowAmount, 2, 0, address(user));
-//         (totalCollateralBase, totalDebtBase, availableBorrowsBase, currentLiquidationThreshold, ltv, healthFactor) =
-//             pool.getUserAccountData(address(user));
-//         console.log("totalCollateralBase: ", totalCollateralBase);
-//         console.log("totalDebtBase: ", totalDebtBase);
-//         console.log("availableBorrowsBase: ", availableBorrowsBase);
-//         console.log("currentLiquidationThreshold: ", currentLiquidationThreshold);
-//         console.log("ltv: ", ltv);
-//         console.log("healthFactor: ", healthFactor);
-//     }
-// }
+        // Verify Superman contract has no leftover tokens
+        assertEq(collateralToken.balanceOf(address(superman)), 0, "Superman should not have collateral tokens");
+        assertEq(debtToken.balanceOf(address(superman)), 0, "Superman should not have debt tokens");
+    }
+}
