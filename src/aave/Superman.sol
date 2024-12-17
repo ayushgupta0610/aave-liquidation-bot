@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {console} from "forge-std/Test.sol";
 import {IPool} from "../interfaces/IPool.sol";
 import {SafeTransferLib} from "lib/solady/src/utils/SafeTransferLib.sol";
 // import {ReentrancyGuardTransient} from "lib/solady/src/utils/ReentrancyGuardTransient.sol";
@@ -57,14 +56,14 @@ contract Superman is ReentrancyGuard, Ownable, IFlashLoanSimpleReceiver {
         address user,
         uint256 debtToCover,
         bool receiveAToken,
-        uint8 slippageFactor
+        uint256 slippageFactor
     ) external nonReentrant {
         // Get user's debt data
         (uint256 totalCollateralBase, uint256 totalDebtBase,,,, uint256 healthFactor) = pool.getUserAccountData(user);
 
         // TODO: Make this revert messages in require
         require(healthFactor < 1e18, "Position not liquidatable");
-        require(slippageFactor < 100, "Invalida slippage factor");
+        require(slippageFactor < 10000, "Invalida slippage factor");
 
         // Calculate maximum liquidatable amount (50% of the total debt)
         uint256 maxLiquidatable = totalDebtBase / 2;
@@ -102,7 +101,6 @@ contract Superman is ReentrancyGuard, Ownable, IFlashLoanSimpleReceiver {
             }
         } else {
             // If liquidator doesn't have enough debt tokens, use flash loan
-            console.log("It entereed the liquidate function");
             bytes memory params = abi.encode(collateralAsset, user, slippageFactor);
             _takeFlashLoan(address(this), debtAsset, actualDebtToCover, params, 0);
         }
@@ -122,7 +120,6 @@ contract Superman is ReentrancyGuard, Ownable, IFlashLoanSimpleReceiver {
         external
         returns (bool)
     {
-        console.log("It entereed the executeOperation function");
         // TODO: Put modifiers such as nonReentrant, etc wherever necessary
         if (msg.sender != address(pool)) {
             revert Superman__UnauthorisedAccess();
@@ -145,7 +142,8 @@ contract Superman is ReentrancyGuard, Ownable, IFlashLoanSimpleReceiver {
 
         asset.safeApprove(address(pool), amount);
 
-        (address collateralAsset, address user, uint8 slippageFactor) = abi.decode(params, (address, address, uint8));
+        (address collateralAsset, address user, uint256 slippageFactor) =
+            abi.decode(params, (address, address, uint256));
         pool.liquidationCall(collateralAsset, asset, user, amount, false);
 
         // convert collateral token to asset
@@ -156,12 +154,7 @@ contract Superman is ReentrancyGuard, Ownable, IFlashLoanSimpleReceiver {
         path[0] = collateralAsset;
         path[1] = asset;
         collateralAsset.safeApprove(address(routerV2), amountIn);
-        console.log("tokenIn: ", path[0]);
-        console.log("amountIn: ", amountIn);
-        console.log("tokenOut: ", path[1]);
-        console.log("amountOutMin: ", amountOutMin);
         routerV2.swapExactTokensForTokens(amountIn, amountOutMin, path, address(this), block.timestamp); // Fix the swap on base
-        console.log("Swap executed successfully");
 
         // approve which contract to pull asset of amount + premium
         asset.safeApprove(address(pool), amount + premium);
@@ -173,7 +166,7 @@ contract Superman is ReentrancyGuard, Ownable, IFlashLoanSimpleReceiver {
     }
 
     // Get the weighted price from AaveV3 Oracle
-    function calculateAmountOutMin(address collateralAsset, address asset, uint256 amountIn, uint8 slippageFactor)
+    function calculateAmountOutMin(address collateralAsset, address asset, uint256 amountIn, uint256 slippageFactor)
         internal
         view
         returns (uint256)
@@ -192,12 +185,9 @@ contract Superman is ReentrancyGuard, Ownable, IFlashLoanSimpleReceiver {
 
         // Convert USD amount to asset amount
         uint256 theoreticalOutput = (amountInUsd * (10 ** assetDecimals)) / assetPriceUsd;
-        console.log("theoreticalOutput: ", theoreticalOutput);
 
-        // Add slippage tolerance (e.g., 1% slippage = multiply by 99 and divide by 100)
-        uint256 SLIPPAGE_TOLERANCE = 100 - slippageFactor; // 1% slippage
-        uint256 amountOutMin = (theoreticalOutput * SLIPPAGE_TOLERANCE) / 100;
-        console.log("amountOutMin: ", amountOutMin);
+        uint256 SLIPPAGE_TOLERANCE = 10000 - slippageFactor; // .5% slippage => slippageFactor = 50
+        uint256 amountOutMin = (theoreticalOutput * SLIPPAGE_TOLERANCE) / 10000;
 
         return amountOutMin;
     }

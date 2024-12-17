@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {Test, console} from "forge-std/Test.sol";
+import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeTransferLib} from "lib/solady/src/utils/SafeTransferLib.sol";
 import {Superman} from "../src/aave/Superman.sol";
@@ -35,10 +35,11 @@ contract SupermanTest is Test {
     uint256 private constant FLASH_LOAN_PREMIUM = 5; // 0.05%
     uint256 private constant PRECISION = 10000;
     uint8 private constant ORACLE_DECIMAL = 8;
+    uint256 private constant SLIPPAGE_FACTOR = 250; // 3% slippage required to convert the collateral asset from debt asset (on Base UV2 from WETH to USDC!)
 
     function setUp() public {
         // Setup contracts
-        string memory rpcUrl = vm.envString("ETH_RPC_URL");
+        string memory rpcUrl = vm.envString("BASE_RPC_URL");
         vm.createSelectFork(rpcUrl);
 
         HelperConfig config = new HelperConfig();
@@ -90,7 +91,6 @@ contract SupermanTest is Test {
 
         // Verify liquidatable state
         (,,,,, uint256 healthFactor) = pool.getUserAccountData(user);
-        console.log("Health Factor after price crash:", healthFactor);
         require(healthFactor < 1e18, "Position not liquidatable");
     }
 
@@ -114,8 +114,7 @@ contract SupermanTest is Test {
         vm.startPrank(liquidator);
         debtToken.approve(address(superman), debtToCover);
 
-        uint8 slippageFactor = 3; // slippage to convert the collateral asset from debt asset
-        superman.liquidate(address(collateralToken), address(debtToken), user, debtToCover, false, slippageFactor);
+        superman.liquidate(address(collateralToken), address(debtToken), user, debtToCover, false, SLIPPAGE_FACTOR);
         vm.stopPrank();
 
         // Verify results
@@ -151,8 +150,7 @@ contract SupermanTest is Test {
         vm.startPrank(liquidator);
         debtToken.approve(address(superman), debtToCover);
 
-        uint8 slippageFactor = 3; // slippage to convert the collateral asset from debt asset
-        superman.liquidate(address(collateralToken), address(debtToken), user, debtToCover, false, slippageFactor);
+        superman.liquidate(address(collateralToken), address(debtToken), user, debtToCover, false, SLIPPAGE_FACTOR);
         vm.stopPrank();
 
         // Verify results
