@@ -38,7 +38,7 @@ contract SupermanTest is Test {
 
     function setUp() public {
         // Setup contracts
-        string memory rpcUrl = vm.envString("BASE_RPC_URL");
+        string memory rpcUrl = vm.envString("ETH_RPC_URL");
         vm.createSelectFork(rpcUrl);
 
         HelperConfig config = new HelperConfig();
@@ -53,7 +53,9 @@ contract SupermanTest is Test {
         // Deploy Superman with correct parameters
         poolAddressesProvider = IPoolAddressesProvider(networkConfig.poolAddressesProvider);
         pool = IPool(networkConfig.aavePool);
-        superman = new Superman(owner, address(pool), address(poolAddressesProvider));
+        superman = new Superman(
+            owner, address(pool), address(poolAddressesProvider), networkConfig.routerV2, networkConfig.aaveOracle
+        );
 
         // Additional setup
         deal(networkConfig.weth, address(user), INITIAL_WETH_BALANCE, false);
@@ -100,65 +102,68 @@ contract SupermanTest is Test {
         uint256 initialOwnerDebt = debtToken.balanceOf(liquidator);
         uint256 initialUserCollateral = collateralToken.balanceOf(user);
 
-        console.log("Initial balances:");
-        console.log("Owner collateral:", initialOwnerCollateral);
-        console.log("Owner debt:", initialOwnerDebt);
-        console.log("User collateral:", initialUserCollateral);
-
-        // Calculate a very small debtToCover (0.1% of total debt)
+        // Get total debt
         (, uint256 totalDebtBase,,,,) = pool.getUserAccountData(user);
-        uint256 debtToCover = 1 * 1e6; // Just 100 USDC to start
-        console.log("Debt to cover:", debtToCover);
-        console.log("totalDebtBase:", totalDebtBase);
 
-        // Give liquidator enough USDC
-        deal(address(debtToken), liquidator, debtToCover * 2);
-        console.log("Liquidator USDC balance:", debtToken.balanceOf(liquidator));
+        // Try to liquidate 75% of the debt (should be capped at 50%)
+        uint256 debtToCover = (totalDebtBase * 75) / 100;
+
+        // Fund liquidator
+        deal(address(debtToken), liquidator, debtToCover);
 
         vm.startPrank(liquidator);
-
-        // Log pre-liquidation approvals
-        console.log("Pre-liquidation approval:", debtToken.allowance(liquidator, address(superman)));
-
-        // Approve Superman to use USDC
         debtToken.approve(address(superman), debtToCover);
-        console.log("Post-approval amount:", debtToken.allowance(liquidator, address(superman)));
 
-        console.log("=== Starting liquidation ===");
-
-        try superman.liquidate(address(collateralToken), address(debtToken), user, debtToCover, false) {
-            console.log("Liquidation succeeded");
-        } catch Error(string memory reason) {
-            console.log("Liquidation failed with reason:", reason);
-        } catch (bytes memory) {
-            console.log("Liquidation failed with low-level error");
-        }
-
+        uint8 slippageFactor = 3; // slippage to convert the collateral asset from debt asset
+        superman.liquidate(address(collateralToken), address(debtToken), user, debtToCover, false, slippageFactor);
         vm.stopPrank();
 
-        // Log final balances
-        console.log("Final balances:");
-        console.log("liquidator collateral:", collateralToken.balanceOf(liquidator));
-        console.log("liquidator debt:", debtToken.balanceOf(liquidator));
-        console.log("User collateral:", collateralToken.balanceOf(user));
+        // Verify results
+        (uint256 finalTotalCollateralBase, uint256 finalTotalDebtBase,,,,) = pool.getUserAccountData(user);
+
+        // Check that no more than 50% was liquidated
+        assertGe(finalTotalDebtBase, totalDebtBase / 2, "Cannot liquidate more than 50%");
+        assertLt(finalTotalDebtBase, totalDebtBase, "Should have liquidated some debt");
+
+        // Check collateral transfer
+        assertGt(collateralToken.balanceOf(liquidator), initialOwnerCollateral, "Owner should receive collateral");
+
+        // Verify Superman contract has no leftover tokens
+        assertEq(collateralToken.balanceOf(address(superman)), 0, "Superman should not have collateral tokens");
+        assertEq(debtToken.balanceOf(address(superman)), 0, "Superman should not have debt tokens");
     }
 
     function testLiquidationWithoutDebtToCover() public {
         _setupForLiquidation();
-        // Perform liquidation
-        uint256 debtToCover = 5_000 * 1e6;
-        liquidator = owner; // Making the liquidator the owner here so that all the assets are transferred back to the owner
-        vm.startPrank(liquidator);
-        // TODO: Calculate the debt to cover (since max 50% can be liquidated)
-        debtToken.approve(address(superman), debtToCover);
-        superman.liquidate(
-            address(collateralToken),
-            address(debtToken),
-            user,
-            debtToCover, // defaulted to uint(-1)
-            false // default: false
-        );
 
+        // Store initial balances
+        // uint256 initialOwnerCollateral = collateralToken.balanceOf(liquidator);
+
+        // Get total debt
+        (, uint256 totalDebtBase,,,,) = pool.getUserAccountData(user);
+
+        // Try to liquidate 75% of the debt (should be capped at 50%)
+        uint256 debtToCover = (totalDebtBase * 75) / 100;
+
+        // Fund liquidator (This won't be there)
+        // deal(address(debtToken), liquidator, debtToCover);
+
+        vm.startPrank(liquidator);
+        debtToken.approve(address(superman), debtToCover);
+
+        uint8 slippageFactor = 3; // slippage to convert the collateral asset from debt asset
+        superman.liquidate(address(collateralToken), address(debtToken), user, debtToCover, false, slippageFactor);
         vm.stopPrank();
+
+        // Verify results
+        (uint256 finalTotalCollateralBase, uint256 finalTotalDebtBase,,,,) = pool.getUserAccountData(user);
+
+        // Check that no more than 50% was liquidated
+        assertGe(finalTotalDebtBase, totalDebtBase / 2, "Cannot liquidate more than 50%");
+        assertLt(finalTotalDebtBase, totalDebtBase, "Should have liquidated some debt");
+
+        // Verify Superman contract has no leftover tokens
+        assertEq(collateralToken.balanceOf(address(superman)), 0, "Superman should not have collateral tokens");
+        assertEq(debtToken.balanceOf(address(superman)), 0, "Superman should not have debt tokens");
     }
 }
